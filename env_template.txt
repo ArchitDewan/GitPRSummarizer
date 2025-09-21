@@ -1,0 +1,14 @@
+# GitHub App Configuration
+# Copy this content to a .env file and replace these values with your actual GitHub App credentials
+
+# Your GitHub App ID (found in your GitHub App settings)
+GITHUB_APP_ID=your_github_app_id_here
+
+# Your GitHub App private key (PEM format)
+# This should be the entire private key content, including the BEGIN and END lines
+GITHUB_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----
+your_private_key_content_here
+-----END RSA PRIVATE KEY-----"
+
+# Your GitHub App webhook secret
+GITHUB_WEBHOOK_SECRET=your_webhook_secret_here
