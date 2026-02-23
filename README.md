@@ -1,6 +1,6 @@
 # GitHub PR Summarizer
 
-A FastAPI application that automatically summarizes pull requests by commenting on them when they are opened, synchronized, or reopened.
+A FastAPI app that listens to GitHub pull request webhooks, summarizes changed files with OpenAI, and posts a summary comment back to the PR.
 
 ## Setup
 
@@ -37,16 +37,19 @@ A FastAPI application that automatically summarizes pull requests by commenting 
 
 2. Edit the `.env` file with your actual values:
    ```bash
-   # Replace with your actual GitHub App ID
    GITHUB_APP_ID=123456
-   
-   # Replace with your private key content (the entire PEM file content)
-   GITHUB_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----
-   your_actual_private_key_content_here
-   -----END RSA PRIVATE KEY-----"
-   
-   # Replace with your webhook secret
+
    GITHUB_WEBHOOK_SECRET=your_webhook_secret_here
+   OPENAI_API_KEY=your_openai_api_key_here
+
+   # Choose one private key option:
+   # Option 1 (recommended)
+   GITHUB_PRIVATE_KEY_PATH=/absolute/path/to/private-key.pem
+
+   # Option 2
+   # GITHUB_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----
+   # your_actual_private_key_content_here
+   # -----END RSA PRIVATE KEY-----"
    ```
 
 ### 3. Install Dependencies
@@ -61,7 +64,7 @@ pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
 
-The application will now start and provide helpful error messages if environment variables are missing.
+The app validates required environment variables on startup and fails fast with clear error messages when configuration is incomplete.
 
 ### 5. Install the App on Your Repository
 
@@ -72,10 +75,11 @@ The application will now start and provide helpful error messages if environment
 
 ## How It Works
 
-1. When a pull request is opened, synchronized, or reopened, GitHub sends a webhook to your application
-2. The application verifies the webhook signature for security
-3. It fetches the list of files changed in the PR
-4. It posts a comment on the PR with a summary of the changes
+1. GitHub sends a webhook when a pull request is opened, synchronized, or reopened.
+2. The app verifies the webhook signature (`X-Hub-Signature-256` or fallback `X-Hub-Signature`).
+3. The app creates a GitHub App installation token and fetches changed files for the PR.
+4. Each file patch is summarized with OpenAI.
+5. A single comment with per-file summaries is posted on the PR.
 
 ## Development
 
