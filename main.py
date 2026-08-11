@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import hmac
 import os
@@ -16,6 +17,9 @@ GITHUB_API_BASE = "https://api.github.com"
 GITHUB_ACCEPT = "application/vnd.github.v3+json"
 USER_AGENT = "GitPrSummarizer/1.0"
 ALLOWED_PR_ACTIONS = {"opened", "synchronize", "reopened"}
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+MAX_PATCH_CHARS = 12000
+GITHUB_PAGE_SIZE = 100
 
 
 def require_env(name: str, description: str) -> str:
@@ -102,6 +106,7 @@ async def github_request(
     url: str,
     token: str,
     json_body: dict[str, Any] | None = None,
+    params: dict[str, Any] | None = None,
 ) -> dict[str, Any] | list[dict[str, Any]]:
     async with httpx.AsyncClient(timeout=30.0) as http_client:
         response = await http_client.request(
@@ -109,8 +114,16 @@ async def github_request(
             url=url,
             headers=github_headers(token),
             json=json_body,
+            params=params,
         )
-    response.raise_for_status()
+
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise RuntimeError(
+            f"GitHub API request failed ({response.status_code}): {response.text}"
+        ) from exc
+
     return response.json()
 
 
@@ -130,10 +143,23 @@ async def fetch_pr_files(
     number: int,
 ) -> list[dict[str, Any]]:
     url = f"{GITHUB_API_BASE}/repos/{owner}/{repo}/pulls/{number}/files"
-    response = await github_request("GET", url, token=installation_token)
-    if not isinstance(response, list):
-        raise RuntimeError("Unexpected GitHub response for PR files")
-    return response
+    files: list[dict[str, Any]] = []
+
+    for page in range(1, 101):
+        response = await github_request(
+            "GET",
+            url,
+            token=installation_token,
+            params={"per_page": GITHUB_PAGE_SIZE, "page": page},
+        )
+        if not isinstance(response, list):
+            raise RuntimeError("Unexpected GitHub response for PR files")
+
+        files.extend(response)
+        if len(response) < GITHUB_PAGE_SIZE:
+            return files
+
+    raise RuntimeError("PR has too many changed files to summarize")
 
 
 async def post_pr_comment(
@@ -159,7 +185,7 @@ def summarize_patch(filename: str, patch: str) -> str:
     if not patch:
         return f"- {filename}: No textual diff available."
 
-    truncated_patch = patch[:12000]
+    truncated_patch = patch[:MAX_PATCH_CHARS]
     prompt = (
         "Summarize the code changes in 1-2 concise sentences.\n"
         "Focus on behavior and intent, not formatting.\n\n"
@@ -169,7 +195,7 @@ def summarize_patch(filename: str, patch: str) -> str:
 
     try:
         response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=OPENAI_MODEL,
             messages=[{"role": "user", "content": prompt}],
         )
         summary = (response.choices[0].message.content or "").strip()
@@ -182,7 +208,10 @@ def summarize_patch(filename: str, patch: str) -> str:
 
 def build_pr_summary(files: list[dict[str, Any]]) -> str:
     summaries = [
-        summarize_patch(file_info["filename"], file_info.get("patch", ""))
+        summarize_patch(
+            file_info.get("filename", "unknown file"),
+            file_info.get("patch", ""),
+        )
         for file_info in files
     ]
     return "AI PR Summary\n\n" + "\n".join(summaries)
@@ -224,10 +253,13 @@ async def github_webhook(
     if not installation_id or not repo_full_name or not pull_request_number:
         raise HTTPException(status_code=400, detail="Incomplete pull_request payload")
 
+    if "/" not in repo_full_name:
+        raise HTTPException(status_code=400, detail="Invalid repository full_name")
+
     owner, repo = repo_full_name.split("/", maxsplit=1)
     installation_token = await get_installation_token(installation_id)
     files = await fetch_pr_files(installation_token, owner, repo, pull_request_number)
-    summary_body = build_pr_summary(files)
+    summary_body = await asyncio.to_thread(build_pr_summary, files)
     await post_pr_comment(installation_token, owner, repo, pull_request_number, summary_body)
 
     return {"status": "comment_posted", "files": len(files)}
